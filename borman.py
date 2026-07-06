@@ -419,47 +419,75 @@ async def post_shutdown(application: Application) -> None:
 # =====================================================================
 # 9. MAIN
 # =====================================================================
+import asyncio
+from telegram.ext import Application
+
 def main() -> None:
     setup_logging()
     logger.info("Starting Telegram Random Scheduler Unification Engine...")
-    
+
+    # ایجاد دیتابیس و مدیریت‌کننده‌ها
     db = Database()
     queue_manager = QueueManager(db)
-    
+
+    # ==================== ساخت Application ====================
     builder = Application.builder().token(TOKEN)
-   
-    if PROXY_URL:
-        logger.info(f"Connecting via proxy: {PROXY_URL}")
-        builder.proxy(PROXY_URL)
-        builder.get_updates_proxy(PROXY_URL)
     
-    application = builder.post_init(post_init).post_shutdown(post_shutdown).build()
-    
+    # بدون پروکسی (حذف کامل بخش پروکسی)
+    application = (
+        builder
+        .post_init(post_init)
+        .post_shutdown(post_shutdown)
+        .build()
+    )
+
+    # ایجاد Sender و Scheduler
     sender = Sender(application.bot, db)
-    scheduler = SchedulerEngine(db=db, sender=sender, queue_manager=queue_manager)
-    
+    scheduler = SchedulerEngine(
+        db=db, 
+        sender=sender, 
+        queue_manager=queue_manager
+    )
+
+    # ذخیره کردن اشیاء در bot_data
     application.bot_data["db"] = db
     application.bot_data["queue_manager"] = queue_manager
     application.bot_data["sender"] = sender
     application.bot_data["scheduler"] = scheduler
-    
+
+    # ثبت هندلرها
     register_handlers(application)
-    
+
     logger.info("Polling activated. Press Ctrl+C to terminate.")
-    
-    # راه‌حل سازگار با پایتون 3.14+
-    import asyncio
-    
+
+    # ==================== اجرای صحیح async ====================
     async def run_bot():
-        await application.initialize()
-        await application.start()
-        await application.updater.start_polling(
-            allowed_updates=None,
-            drop_pending_updates=True
-        )
-        # نگه داشتن برنامه تا Ctrl+C
-        await asyncio.Event().wait()
-    
+        try:
+            await application.initialize()
+            await application.start()
+            
+            # شروع polling
+            await application.updater.start_polling(
+                allowed_updates=None,
+                drop_pending_updates=True,
+                # تنظیمات مناسب برای سرور
+                poll_interval=1.0,
+                timeout=30
+            )
+            
+            # نگه داشتن برنامه تا وقتی که Ctrl+C بزنیم
+            await asyncio.Event().wait()
+            
+        except asyncio.CancelledError:
+            logger.info("Bot is shutting down...")
+        except Exception as e:
+            logger.error(f"Error in bot: {e}", exc_info=True)
+        finally:
+            # تمیز کردن در زمان خروج
+            await application.stop()
+            await application.shutdown()
+
+    # اجرای اصلی
     asyncio.run(run_bot())
 
 if __name__ == "__main__":
